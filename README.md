@@ -1,37 +1,37 @@
-# Urban Energy Decarbonisation Explorer (Phase 1)
+# Urban Energy Decarbonisation Explorer (UED Explorer)
 
-Browser-native urban energy analytics with:
-- React + TypeScript + Vite
-- MapLibre GL JS for interactive maps
-- DuckDB-WASM + spatial extension (+ h3 extension when available)
-- Native LLM tool-calling loop (OpenAI-compatible endpoint)
+Browser-native urban energy analytics for non-technical planners and sustainability teams.
 
-This repository now implements the first PLAN slice:
-- Map + DuckDB foundation
-- Synthetic London urban energy dataset in-browser
-- Robust tool definitions and safe tool executor
-- Multi-step tool-calling agent loop
-- Chat-first dashboard with layer manager and tool logs
-- Prompt-caching friendly static prompt prefix + dynamic schema injection
-- Lazy schema discovery tools (`listTables`, `getTableSchema`)
+## Current Implementation
+
+- React + TypeScript + Vite frontend.
+- MapLibre map with H3 choropleth layer support.
+- DuckDB-WASM in-browser analytics with spatial extension and optional h3 extension.
+- assistant-ui chat runtime and UI.
+- Native tool-calling agent loop (OpenAI-compatible API).
+- Structured tool call/result cards rendered inside the thread.
+- Prompt-caching friendly system prompt layout.
+- Dynamic schema injection and schema discovery tools.
+- Basemap selector in UI plus AI basemap tool (`osm`, `dark`, `positron`).
+- OSM is the default basemap.
 
 ## Quick Start
 
-1. Install dependencies:
+1. Install dependencies.
 
 ```bash
 npm install
 ```
 
-2. Create environment file:
+2. Create local environment file.
 
 ```bash
 cp .env.example .env
 ```
 
-3. Set API key in `.env` or directly in the app UI.
+3. Set an API key in `.env`.
 
-4. Run locally:
+4. Run development server.
 
 ```bash
 npm run dev
@@ -44,17 +44,25 @@ VITE_LLM_API_URL=https://openrouter.ai/api/v1/chat/completions
 VITE_LLM_MODEL=meta-llama/llama-3.3-70b-instruct
 VITE_APP_TITLE=Urban Energy Decarb Explorer
 VITE_APP_REFERER=http://localhost
-VITE_MAP_STYLE=https://demotiles.maplibre.org/style.json
+VITE_BASEMAP_PRESET=osm
 VITE_ENABLE_PROMPT_CACHING=true
 VITE_PROMPT_CACHE_TTL_SECONDS=300
 VITE_OPENROUTER_CACHE_CONTROL=
+VITE_OPENROUTER_API_KEY=
+OPENROUTER_API_KEY=your-openrouter-api-key-here
 ```
 
-## Current Tooling
+Notes:
+- `OPENROUTER_API_KEY` is injected by Vite config for convenience.
+- `VITE_OPENROUTER_API_KEY` is optional and directly client-visible.
+- For public production deployments, a backend proxy is recommended instead of exposing provider keys to browser clients.
 
-- `runH3SpatialQuery(sql)`
+## Tooling (Agent)
+
+- `setBasemap(preset)`
 - `listTables()`
 - `getTableSchema(tableName)`
+- `runH3SpatialQuery(sql)`
 - `addH3Layer(layerId, geojson, colorBy, opacity?)`
 - `flyTo(center, zoom?)`
 - `fitBounds(bounds)`
@@ -63,30 +71,35 @@ VITE_OPENROUTER_CACHE_CONTROL=
 - `removeLayer(layerId)`
 - `clearMap()`
 
-## Example Query
+## UX Features
 
-"Show H3 hex grid of London at resolution 9 colored by average energy demand and add a popup where CO2 savings are highest."
+- assistant-ui thread with local runtime adapter.
+- In-thread tool cards with structured args/result display.
+- Layer manager for visibility, opacity, and removal.
+- Basemap dropdown for manual switching.
+- AI can also switch basemap via tool call.
 
-## Project Structure
+## Performance Strategy
 
-- `src/services/mapService.ts`: Map lifecycle + safe map actions
-- `src/services/duckdbService.ts`: DuckDB-WASM init, extensions, query API
-- `src/tools/definitions.ts`: LLM tool schemas
-- `src/tools/executor.ts`: Defensive tool execution layer
-- `src/agent/agentLoop.ts`: multi-turn tool-calling loop with retry
-- `src/components/Sidebar.tsx`: Chat, logs, layer manager
-- `src/components/Map.tsx`: map canvas host
+- assistant-ui chat shell is lazy-loaded via React lazy/suspense.
+- DuckDB-WASM is loaded on first analytics use, not at app startup.
+- Prompt prefix remains stable to support provider prompt caching.
 
-## Next Planned Steps
+## Architecture Overview
 
-- Integrate assistant-ui for richer chat UX and structured tool feedback
-- Add dynamic legend rendering and export actions (GeoJSON/CSV/screenshot)
-- Add ingestion flows for CSV/GeoJSON/GeoParquet
-- Add unit tests for tool executor + mocked integration tests for agent loop
+- `src/components/AssistantChat.tsx`: assistant-ui runtime adapter and thread view.
+- `src/components/ToolCallCard.tsx`: custom tool-call renderer.
+- `src/components/Sidebar.tsx`: chat panel, controls, basemap selector.
+- `src/components/Map.tsx`: map container host.
+- `src/services/mapService.ts`: map actions, layers, camera, basemap switching.
+- `src/services/basemaps.ts`: basemap style presets.
+- `src/services/duckdbService.ts`: lazy DuckDB init and query helpers.
+- `src/tools/definitions.ts`: JSON schema tool definitions.
+- `src/tools/executor.ts`: defensive tool executor.
+- `src/agent/agentLoop.ts`: multi-turn agent loop, retries, tool trace capture.
 
-## Token Efficiency Strategy
+## Example Prompts
 
-Implemented patterns for reducing context bloat in multi-step loops:
-- Prompt caching layout: stable static prefix (instructions + tool summary + schema context) at top.
-- Schema lazy loading tools: the model can discover schema only when needed.
-- Dynamic schema injection: app preselects relevant table schema from user query terms.
+- Show H3 hex grid of London at resolution 9 colored by average energy demand.
+- Switch basemap to dark and highlight areas with high solar potential.
+- Compare CO2 savings between two zones and fly to the better one.
