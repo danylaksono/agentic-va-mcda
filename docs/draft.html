@@ -1,0 +1,547 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Urban Energy Decarb Explorer • MapLibre + DuckDB + H3 + OpenRouter Native Tools</title>
+    <script src="https://unpkg.com/maplibre-gl@5.3.0/dist/maplibre-gl.js"></script>
+    <link rel="stylesheet" href="https://unpkg.com/maplibre-gl@5.3.0/dist/maplibre-gl.css">
+    <script src="https://cdn.jsdelivr.net/npm/@duckdb/duckdb-wasm@1.29/dist/duckdb-browser.mjs"></script>
+    <style>
+        body {
+            margin: 0;
+            font-family: system-ui, -apple-system, BlinkMacSystemFont, sans-serif;
+        }
+
+        #map {
+            width: 100vw;
+            height: 100vh;
+        }
+
+        #controls {
+            position: absolute;
+            top: 15px;
+            left: 15px;
+            background: rgba(255, 255, 255, 0.95);
+            padding: 18px;
+            border-radius: 12px;
+            box-shadow: 0 4px 20px rgba(0, 0, 0, 0.15);
+            z-index: 1000;
+            width: 460px;
+            max-height: 85vh;
+            overflow-y: auto;
+        }
+
+        h1 {
+            margin: 0 0 12px 0;
+            font-size: 1.4rem;
+            color: #0d6efd;
+        }
+
+        input {
+            width: 100%;
+            padding: 14px;
+            font-size: 16px;
+            border: 2px solid #ddd;
+            border-radius: 8px;
+            margin-bottom: 12px;
+            box-sizing: border-box;
+        }
+
+        button {
+            width: 100%;
+            padding: 14px;
+            font-size: 16px;
+            background: #0d6efd;
+            color: white;
+            border: none;
+            border-radius: 8px;
+            cursor: pointer;
+            font-weight: 600;
+        }
+
+        button:hover {
+            background: #0b5ed7;
+        }
+
+        button:disabled {
+            background: #6c757d;
+            cursor: not-allowed;
+        }
+
+        #status {
+            margin-top: 12px;
+            font-size: 0.95rem;
+            padding: 8px 12px;
+            border-radius: 6px;
+            background: #f8f9fa;
+            border: 1px solid #dee2e6;
+        }
+
+        #output {
+            margin-top: 16px;
+            background: #f8f9fa;
+            border-radius: 8px;
+            padding: 14px;
+            font-size: 0.9rem;
+            line-height: 1.5;
+            max-height: 280px;
+            overflow-y: auto;
+            white-space: pre-wrap;
+            border: 1px solid #dee2e6;
+        }
+
+        .log {
+            font-size: 0.85rem;
+            color: #666;
+            margin-top: 8px;
+        }
+    </style>
+</head>
+
+<body>
+    <div id="map"></div>
+
+    <div id="controls">
+        <h1>🌍 Urban Energy Decarb Explorer</h1>
+        <p style="margin:0 0 12px 0; font-size:0.95rem; color:#555;">
+            Ask in plain English.<br>
+            H3 hex grids + DuckDB + energy metrics are first-class citizens.
+        </p>
+        <input id="query" type="text"
+            placeholder="Show H3 hex grid of London at resolution 9 colored by average building energy demand (kWh/m²) and highlight areas with high solar potential">
+        <button onclick="sendToLLM()">Analyze with AI</button>
+
+        <div id="status">Initializing DuckDB + H3 + MapLibre…</div>
+        <div id="output">Ready. Try a natural-language urban energy query above.</div>
+
+        <div class="log" id="log"></div>
+    </div>
+
+    <script type="module">
+        import * as duckdb from 'https://cdn.jsdelivr.net/npm/@duckdb/duckdb-wasm@1.29/dist/duckdb-browser.mjs';
+
+        // ====================== CONFIG ======================
+        let map = null;
+        let db = null;
+        let messages = [];
+        const API_URL = "https://openrouter.ai/api/v1/chat/completions";
+        const API_KEY = "sk-or-v1-XXXXXXXXXXXXXXXXXXXXXXXX"; // ← REPLACE WITH YOUR REAL OPENROUTER KEY
+
+        // ====================== INIT ======================
+        async function init() {
+            const statusEl = document.getElementById('status');
+
+            // 1. MapLibre
+            map = new maplibregl.Map({
+                container: 'map',
+                style: 'https://demotiles.maplibre.org/style.json',
+                center: [-0.1278, 51.5074],
+                zoom: 11,
+                pitch: 0
+            });
+
+            // 2. DuckDB + extensions + sample urban energy dataset (London area)
+            const config = await duckdb.configure();
+            const worker = await duckdb.createWorker(config);
+            db = await duckdb.createDB(worker);
+
+            await db.exec(`
+        INSTALL spatial; LOAD spatial;
+        INSTALL h3 FROM community; LOAD h3;
+      `);
+
+            // Create sample dataset for demo (real London-area points with fake energy/decarb metrics)
+            await db.exec(`
+        CREATE TABLE IF NOT EXISTS urban_energy (
+          id INTEGER PRIMARY KEY,
+          lat DOUBLE,
+          lon DOUBLE,
+          energy_demand_kwh DOUBLE,
+          solar_potential_kwh DOUBLE,
+          co2_savings_tonnes DOUBLE,
+          heat_pump_viability DOUBLE
+        );
+
+        INSERT INTO urban_energy VALUES
+          (1, 51.5074, -0.1278, 1420, 920, 38, 0.85),
+          (2, 51.515, -0.1, 1180, 1050, 52, 0.92),
+          (3, 51.49, -0.15, 1650, 780, 29, 0.71),
+          (4, 51.52, -0.08, 980, 1350, 67, 0.95),
+          (5, 51.48, -0.2, 1310, 890, 41, 0.78),
+          (6, 51.53, -0.12, 1550, 650, 33, 0.65),
+          (7, 51.50, -0.09, 1120, 1180, 55, 0.88);
+      `);
+
+            console.log("✅ DuckDB + spatial + H3 + sample energy data loaded");
+            statusEl.textContent = "✅ Ready – H3 + energy decarb tools active";
+            document.getElementById('output').textContent = "Demo data loaded (London area). Ask anything about energy demand, solar potential, CO₂ savings, heat-pump viability, etc.";
+        }
+
+        // ====================== TOOLS DEFINITION (Native OpenRouter function calling) ======================
+        const TOOLS = [
+            {
+                type: "function",
+                function: {
+                    name: "runH3SpatialQuery",
+                    description: "Run a DuckDB SQL query using H3, spatial functions, and the urban_energy table. Returns GeoJSON FeatureCollection + summary. Use h3_latlng_to_cell, h3_cell_to_geojson, etc. Always return a column named 'geom' containing valid GeoJSON geometry string for each H3 cell.",
+                    parameters: {
+                        type: "object",
+                        properties: {
+                            sql: {
+                                type: "string",
+                                description: "Full SQL query. Example: SELECT h3_cell_to_geojson(h3_latlng_to_cell(lat, lon, 9)) AS geom, AVG(energy_demand_kwh) AS avg_energy_demand_kwh, AVG(solar_potential_kwh) AS avg_solar_potential FROM urban_energy GROUP BY h3_latlng_to_cell(lat, lon, 9)"
+                            }
+                        },
+                        required: ["sql"]
+                    }
+                }
+            },
+            {
+                type: "function",
+                function: {
+                    name: "addH3Layer",
+                    description: "Add a styled H3 hexagonal choropleth layer to the map. Use after runH3SpatialQuery. Color is automatically data-driven based on the chosen metric.",
+                    parameters: {
+                        type: "object",
+                        properties: {
+                            layerId: { type: "string", description: "Unique layer ID, e.g. 'energy-demand-hex'" },
+                            geojson: { type: "string", description: "Stringified GeoJSON FeatureCollection (from previous query)" },
+                            colorBy: { type: "string", description: "Metric column to color by, e.g. 'avg_energy_demand_kwh' or 'avg_solar_potential'" },
+                            opacity: { type: "number", description: "Layer opacity between 0.3 and 0.9" }
+                        },
+                        required: ["layerId", "geojson", "colorBy"]
+                    }
+                }
+            },
+            {
+                type: "function",
+                function: {
+                    name: "flyTo",
+                    description: "Move the map camera to a location",
+                    parameters: {
+                        type: "object",
+                        properties: {
+                            center: { type: "array", items: { type: "number" }, description: "[longitude, latitude]" },
+                            zoom: { type: "number", description: "Target zoom level (optional)" }
+                        },
+                        required: ["center"]
+                    }
+                }
+            },
+            {
+                type: "function",
+                function: {
+                    name: "fitBounds",
+                    description: "Fit the map to a bounding box",
+                    parameters: {
+                        type: "object",
+                        properties: {
+                            bounds: {
+                                type: "array",
+                                items: { type: "array", items: { type: "number" } },
+                                description: "[[minLon, minLat], [maxLon, maxLat]]"
+                            }
+                        },
+                        required: ["bounds"]
+                    }
+                }
+            },
+            {
+                type: "function",
+                function: {
+                    name: "addMarker",
+                    description: "Add a marker to the map",
+                    parameters: {
+                        type: "object",
+                        properties: {
+                            lngLat: { type: "array", items: { type: "number" }, description: "[longitude, latitude]" },
+                            label: { type: "string", description: "Optional popup label" }
+                        },
+                        required: ["lngLat"]
+                    }
+                }
+            },
+            {
+                type: "function",
+                function: {
+                    name: "addPopup",
+                    description: "Add a popup at a location",
+                    parameters: {
+                        type: "object",
+                        properties: {
+                            lngLat: { type: "array", items: { type: "number" } },
+                            text: { type: "string" }
+                        },
+                        required: ["lngLat", "text"]
+                    }
+                }
+            },
+            {
+                type: "function",
+                function: {
+                    name: "clearMap",
+                    description: "Remove all custom H3 layers, markers and popups",
+                    parameters: { type: "object", properties: {} }
+                }
+            },
+            {
+                type: "function",
+                function: {
+                    name: "removeLayer",
+                    description: "Remove a specific layer by ID",
+                    parameters: {
+                        type: "object",
+                        properties: {
+                            layerId: { type: "string" }
+                        },
+                        required: ["layerId"]
+                    }
+                }
+            }
+        ];
+
+        // ====================== TOOL EXECUTION ======================
+        async function executeTool(toolCall) {
+            const { name, arguments: argsStr } = toolCall;
+            let args;
+            try {
+                args = JSON.parse(argsStr);
+            } catch (e) {
+                return { success: false, error: "Invalid JSON arguments" };
+            }
+
+            console.log(`🔧 Executing tool: ${name}`, args);
+
+            switch (name) {
+                case "runH3SpatialQuery": {
+                    try {
+                        const resultRows = await db.query(args.sql);
+
+                        // Build GeoJSON FeatureCollection from rows (expects 'geom' column with GeoJSON string)
+                        const features = resultRows.map(row => {
+                            if (!row.geom) return null;
+                            try {
+                                const geometry = JSON.parse(row.geom);
+                                const properties = { ...row };
+                                delete properties.geom; // keep clean
+                                return {
+                                    type: "Feature",
+                                    geometry,
+                                    properties
+                                };
+                            } catch (_) { return null; }
+                        }).filter(Boolean);
+
+                        const geojsonFC = {
+                            type: "FeatureCollection",
+                            features
+                        };
+
+                        return {
+                            success: true,
+                            geojson: JSON.stringify(geojsonFC),
+                            rowCount: resultRows.length,
+                            message: `Query returned ${resultRows.length} H3 cells`
+                        };
+                    } catch (err) {
+                        return { success: false, error: err.message };
+                    }
+                }
+
+                case "addH3Layer": {
+                    try {
+                        const geojsonObj = JSON.parse(args.geojson);
+                        const sourceId = args.layerId + "-source";
+
+                        // Remove old layer/source if exists
+                        if (map.getSource(sourceId)) map.removeSource(sourceId);
+                        if (map.getLayer(args.layerId)) map.removeLayer(args.layerId);
+
+                        // Add source
+                        map.addSource(sourceId, {
+                            type: "geojson",
+                            data: geojsonObj
+                        });
+
+                        // Add fill layer with simple data-driven color (green → red ramp based on the metric)
+                        // For real production you would compute min/max dynamically; here we use a basic expression
+                        map.addLayer({
+                            id: args.layerId,
+                            type: "fill",
+                            source: sourceId,
+                            paint: {
+                                "fill-color": [
+                                    "interpolate",
+                                    ["linear"],
+                                    ["get", args.colorBy],
+                                    0, "#00ff00",
+                                    800, "#ffff00",
+                                    1600, "#ff0000"
+                                ],
+                                "fill-opacity": args.opacity || 0.65,
+                                "fill-outline-color": "#ffffff"
+                            }
+                        });
+
+                        return {
+                            success: true,
+                            message: `H3 layer '${args.layerId}' added and colored by ${args.colorBy}`
+                        };
+                    } catch (err) {
+                        return { success: false, error: err.message };
+                    }
+                }
+
+                case "flyTo":
+                    map.flyTo({
+                        center: args.center,
+                        zoom: args.zoom || map.getZoom(),
+                        duration: 1800
+                    });
+                    return { success: true, message: "Camera moved" };
+
+                case "fitBounds":
+                    map.fitBounds(args.bounds, { padding: 60, duration: 1800 });
+                    return { success: true, message: "Map fitted to bounds" };
+
+                case "addMarker":
+                    new maplibregl.Marker({ color: "#0d6efd" })
+                        .setLngLat(args.lngLat)
+                        .setPopup(args.label ? new maplibregl.Popup().setHTML(`<strong>${args.label}</strong>`) : null)
+                        .addTo(map);
+                    return { success: true, message: "Marker added" };
+
+                case "addPopup":
+                    new maplibregl.Popup({ closeButton: true })
+                        .setLngLat(args.lngLat)
+                        .setHTML(args.text)
+                        .addTo(map);
+                    return { success: true, message: "Popup added" };
+
+                case "clearMap":
+                    // Remove all custom layers (except basemap)
+                    const style = map.getStyle();
+                    style.layers.forEach(layer => {
+                        if (!["background", "road", "water", "land"].some(keyword => layer.id.includes(keyword))) {
+                            if (map.getLayer(layer.id)) map.removeLayer(layer.id);
+                            if (map.getSource(layer.id + "-source")) map.removeSource(layer.id + "-source");
+                        }
+                    });
+                    return { success: true, message: "Map cleared of custom layers" };
+
+                case "removeLayer":
+                    if (map.getLayer(args.layerId)) map.removeLayer(args.layerId);
+                    if (map.getSource(args.layerId + "-source")) map.removeSource(args.layerId + "-source");
+                    return { success: true, message: `Layer ${args.layerId} removed` };
+
+                default:
+                    return { success: false, error: "Unknown tool" };
+            }
+        }
+
+        // ====================== LLM CONVERSATION LOOP (Native Tool Calling) ======================
+        async function sendToLLM() {
+            const queryInput = document.getElementById('query').value.trim();
+            if (!queryInput) return;
+
+            const statusEl = document.getElementById('status');
+            const outputEl = document.getElementById('output');
+            const logEl = document.getElementById('log');
+
+            statusEl.textContent = "Calling OpenRouter (tool-calling mode)…";
+            outputEl.textContent = "Thinking…";
+
+            // Add user message
+            messages.push({ role: "user", content: queryInput });
+
+            let isFinished = false;
+            let finalAnswer = "";
+
+            while (!isFinished) {
+                try {
+                    const response = await fetch(API_URL, {
+                        method: "POST",
+                        headers: {
+                            "Authorization": `Bearer ${API_KEY}`,
+                            "HTTP-Referer": "http://localhost",
+                            "X-OpenRouter-Title": "Urban Energy Decarb Explorer",
+                            "Content-Type": "application/json"
+                        },
+                        body: JSON.stringify({
+                            model: "meta-llama/llama-3.3-70b-instruct",
+                            messages: [
+                                {
+                                    role: "system",
+                                    content: `You are an expert urban planner focused on energy decarbonisation.
+You have full control over a MapLibre map backed by DuckDB + H3.
+Always prefer H3 hexagonal grids for performant city-scale analysis.
+Use the provided tools in the correct order:
+1. runH3SpatialQuery first when data/analysis is needed.
+2. Then call addH3Layer to visualise the result.
+3. Use flyTo / fitBounds / addMarker / addPopup to guide the user.
+4. clearMap or removeLayer when the user wants to reset.
+Return only tool calls when you need to act. When everything is done, give a concise plain-English final answer with key insights.`
+                                },
+                                ...messages
+                            ],
+                            tools: TOOLS,
+                            tool_choice: "auto",
+                            temperature: 0.1
+                        })
+                    });
+
+                    const data = await response.json();
+                    const assistantMessage = data.choices[0].message;
+
+                    // Add assistant message to history
+                    messages.push(assistantMessage);
+
+                    // Check for tool calls
+                    if (assistantMessage.tool_calls && assistantMessage.tool_calls.length > 0) {
+                        logEl.innerHTML += `<div style="color:#0d6efd">→ Tool calls: ${assistantMessage.tool_calls.map(t => t.function.name).join(", ")}</div>`;
+
+                        // Execute all tools in parallel
+                        const toolResults = await Promise.all(
+                            assistantMessage.tool_calls.map(async (toolCall) => {
+                                const result = await executeTool(toolCall);
+                                return {
+                                    tool_call_id: toolCall.id,
+                                    role: "tool",
+                                    name: toolCall.function.name,
+                                    content: JSON.stringify(result)
+                                };
+                            })
+                        );
+
+                        // Add tool results back to messages
+                        messages.push(...toolResults);
+                    } else {
+                        // No more tools → final answer
+                        isFinished = true;
+                        finalAnswer = assistantMessage.content || "Analysis complete.";
+                    }
+                } catch (err) {
+                    console.error(err);
+                    outputEl.textContent = `Error: ${err.message}`;
+                    statusEl.textContent = "❌ Error contacting OpenRouter";
+                    return;
+                }
+            }
+
+            // Final UI update
+            outputEl.innerHTML = `<strong>AI Final Answer:</strong><br>${finalAnswer}`;
+            statusEl.textContent = "✅ Analysis complete – map updated";
+            logEl.innerHTML += `<div style="color:#28a745">✓ Final answer received</div>`;
+
+            // Optional: scroll to bottom of log
+            logEl.scrollTop = logEl.scrollHeight;
+        }
+
+        // Auto-start
+        window.onload = init;
+    </script>
+</body>
+
+</html>
