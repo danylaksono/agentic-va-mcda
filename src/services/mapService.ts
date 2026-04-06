@@ -62,24 +62,26 @@ export class MapService {
 
     const minValue = metricValues.length > 0 ? Math.min(...metricValues) : 0;
     const maxValue = metricValues.length > 0 ? Math.max(...metricValues) : 1;
-    const midValue = minValue + (maxValue - minValue) / 2;
+    const hasValueRange = maxValue > minValue;
 
     map.addLayer({
       id: layerId,
       type: 'fill',
       source: sourceId,
       paint: {
-        'fill-color': [
-          'interpolate',
-          ['linear'],
-          ['coalesce', ['to-number', ['get', colorBy]], minValue],
-          minValue,
-          '#17a34a',
-          midValue,
-          '#f59f00',
-          maxValue,
-          '#cf222e',
-        ],
+        'fill-color': hasValueRange
+          ? [
+              'interpolate',
+              ['linear'],
+              ['coalesce', ['to-number', ['get', colorBy]], minValue],
+              minValue,
+              '#17a34a',
+              minValue + (maxValue - minValue) / 2,
+              '#f59f00',
+              maxValue,
+              '#cf222e',
+            ]
+          : '#178183',
         'fill-opacity': opacity,
         'fill-outline-color': '#ffffff',
       },

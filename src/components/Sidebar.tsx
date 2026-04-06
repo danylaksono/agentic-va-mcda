@@ -1,5 +1,11 @@
-import { Suspense, lazy } from 'react';
-import type { BasemapPreset, ChatMessage, ChatRunOutput, ManagedLayer } from '../types';
+import { Suspense, lazy, type ChangeEvent, useState } from 'react';
+import type {
+  BasemapPreset,
+  ChatMessage,
+  ChatRunOutput,
+  ManagedLayer,
+  StoredGeoDatasetSummary,
+} from '../types';
 
 const AssistantChat = lazy(() => import('./AssistantChat'));
 
@@ -16,6 +22,10 @@ interface SidebarProps {
   onChangeLayerOpacity: (layerId: string, opacity: number) => void;
   onToggleLayerVisibility: (layerId: string, visible: boolean) => void;
   onRemoveLayer: (layerId: string) => void;
+  onImportGeoJson: (file: File, resolution: number) => Promise<void>;
+  onDeleteDataset: (datasetId: string) => Promise<void>;
+  datasets: StoredGeoDatasetSummary[];
+  uploadStatus: string;
 }
 
 export default function Sidebar({
@@ -31,7 +41,26 @@ export default function Sidebar({
   onChangeLayerOpacity,
   onToggleLayerVisibility,
   onRemoveLayer,
+  onImportGeoJson,
+  onDeleteDataset,
+  datasets,
+  uploadStatus,
 }: SidebarProps) {
+  const [resolution, setResolution] = useState(8);
+
+  const handleFileChange = async (event: ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0];
+    event.target.value = '';
+
+    if (!file) return;
+
+    try {
+      await onImportGeoJson(file, resolution);
+    } catch {
+      // Status is handled by the parent.
+    }
+  };
+
   return (
     <aside className="sidebar">
       <section className="panel hero-panel">
@@ -57,6 +86,31 @@ export default function Sidebar({
       </section>
 
       <section className="panel">
+        <label htmlFor="geojson-upload">Upload GeoJSON polygons</label>
+        <label htmlFor="geojson-resolution">H3 resolution</label>
+        <select
+          id="geojson-resolution"
+          className="text-input"
+          value={resolution}
+          onChange={(event) => setResolution(Number(event.target.value))}
+        >
+          <option value={6}>6</option>
+          <option value={7}>7</option>
+          <option value={8}>8</option>
+          <option value={9}>9</option>
+          <option value={10}>10</option>
+        </select>
+        <input
+          id="geojson-upload"
+          className="text-input"
+          type="file"
+          accept=".geojson,.json,application/geo+json,application/json"
+          onChange={handleFileChange}
+        />
+        <div className="status-line">{uploadStatus}</div>
+      </section>
+
+      <section className="panel">
         <label htmlFor="basemap-select">Basemap</label>
         <select
           id="basemap-select"
@@ -68,7 +122,6 @@ export default function Sidebar({
           <option value="dark">Dark</option>
           <option value="positron">Positron</option>
         </select>
-
       </section>
 
       <section className="panel">
@@ -125,6 +178,33 @@ export default function Sidebar({
               </label>
               <button type="button" className="ghost-btn" onClick={() => onRemoveLayer(layer.id)}>
                 remove
+              </button>
+            </div>
+          </div>
+        ))}
+      </section>
+
+      <section className="panel scroll-panel">
+        <h2>Uploaded Datasets</h2>
+        {datasets.length === 0 && <p className="muted">No uploaded datasets yet.</p>}
+        {datasets.map((dataset) => (
+          <div key={dataset.id} className="dataset-card">
+            <div className="layer-title">{dataset.name}</div>
+            <div className="layer-meta">
+              <span>resolution: {dataset.resolution}</span>
+              <span>features: {dataset.featureCount}</span>
+              <span>cells: {dataset.cellCount}</span>
+            </div>
+            <div className="layer-controls">
+              <span className="dataset-timestamp">
+                {new Date(dataset.createdAt).toLocaleString()}
+              </span>
+              <button
+                type="button"
+                className="ghost-btn"
+                onClick={() => onDeleteDataset(dataset.id)}
+              >
+                delete
               </button>
             </div>
           </div>

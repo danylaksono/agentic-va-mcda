@@ -30,6 +30,30 @@ export interface ToolDefinition {
   };
 }
 
+export interface StoredGeoDatasetFeature {
+  id: string;
+  index: number;
+  geometryType: 'Polygon' | 'MultiPolygon';
+  properties: Record<string, unknown>;
+  h3Cells: string[];
+}
+
+export interface StoredGeoDatasetSummary {
+  id: string;
+  name: string;
+  layerId: string;
+  tableName: string;
+  resolution: number;
+  featureCount: number;
+  cellCount: number;
+  createdAt: number;
+}
+
+export interface StoredGeoDataset extends StoredGeoDatasetSummary {
+  rawGeoJson: GeoJSONFeatureCollection;
+  features: StoredGeoDatasetFeature[];
+}
+
 export interface GeoJSONGeometry {
   type: string;
   coordinates?: unknown;

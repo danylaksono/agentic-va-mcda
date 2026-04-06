@@ -245,6 +245,14 @@ button:disabled {
   background: #fbfdff;
 }
 
+.dataset-card {
+  border: 1px solid #d5e4f1;
+  border-radius: 0.65rem;
+  padding: 0.55rem;
+  margin-bottom: 0.55rem;
+  background: #fbfdff;
+}
+
 .layer-title {
   font-weight: 700;
   font-size: 0.85rem;
@@ -276,6 +284,11 @@ button:disabled {
 
 .layer-controls input[type='range'] {
   width: 90px;
+}
+
+.dataset-timestamp {
+  color: #5a7285;
+  font-size: 0.72rem;
 }
 
 .log-item {

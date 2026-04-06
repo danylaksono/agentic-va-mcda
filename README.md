@@ -14,6 +14,7 @@ Browser-native urban energy analytics for non-technical planners and sustainabil
 - Dynamic schema injection and schema discovery tools.
 - Basemap selector in UI plus AI basemap tool (`osm`, `dark`, `positron`).
 - OSM is the default basemap.
+- GeoJSON polygon uploads with H3 polyfill, IndexedDB persistence, and DuckDB rehydration.
 
 ## Quick Start
 
@@ -64,6 +65,7 @@ Notes:
 - `getTableSchema(tableName)`
 - `runH3SpatialQuery(sql)`
 - `addH3Layer(layerId, geojson, colorBy, opacity?)`
+- `importGeoJson(file, resolution)` via the upload UI
 - `flyTo(center, zoom?)`
 - `fitBounds(bounds)`
 - `addMarker(lngLat, label?)`
