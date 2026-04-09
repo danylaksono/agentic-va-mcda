@@ -55,14 +55,40 @@ export const TOOL_DEFINITIONS: ToolDefinition[] = [
     function: {
       name: 'runH3SpatialQuery',
       description:
-        'Execute DuckDB SQL using spatial and H3 functions over urban_energy. Query must return a geom column containing GeoJSON geometry text per row.',
+        'Execute DuckDB SQL using spatial and H3 functions. Use for most analysis tasks. Query must be read-only (SELECT/CTE). For map layers, return a geom column with valid GeoJSON geometry text per row.',
       parameters: {
         type: 'object',
         properties: {
           sql: {
             type: 'string',
             description:
-              'DuckDB SQL SELECT statement. Include geom via h3_cell_to_geojson(...).',
+              'Full DuckDB read-only SQL (SELECT or WITH...SELECT). You may use spatial/H3 functions such as ST_Buffer, ST_DWithin, ST_Area, h3_latlng_to_cell, h3_cell_to_boundary_wkt, h3_grid_distance.',
+          },
+          description: {
+            type: 'string',
+            description: 'Short description of what the query does for logging and traceability.',
+          },
+        },
+        required: ['sql'],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'runSafeSpatialQuery',
+      description:
+        'Strict safe wrapper for read-only spatial SQL. Use when prior query failed or user asks for safer/lighter query execution.',
+      parameters: {
+        type: 'object',
+        properties: {
+          sql: {
+            type: 'string',
+            description: 'DuckDB read-only SQL (SELECT or WITH...SELECT).',
+          },
+          description: {
+            type: 'string',
+            description: 'Short description for query logs.',
           },
         },
         required: ['sql'],

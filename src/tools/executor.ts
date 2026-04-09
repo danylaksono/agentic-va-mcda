@@ -19,8 +19,43 @@ const NUMERIC_COLUMNS = [
   'avg_heat_pump_viability',
 ] as const;
 
-function isSelectQuery(sql: string): boolean {
-  return /^\s*select\s+/i.test(sql);
+const DEFAULT_QUERY_TIMEOUT_MS = 10_000;
+const DEFAULT_QUERY_MAX_ROWS = 1_000;
+const SAFE_QUERY_TIMEOUT_MS = 8_000;
+const SAFE_QUERY_MAX_ROWS = 500;
+
+const FORBIDDEN_SQL_PATTERNS: RegExp[] = [
+  /\b(insert|update|delete|drop|alter|create|replace|truncate|attach|detach|copy|export|import)\b/i,
+  /\b(install|load|pragma|vacuum|call|set|reset|transaction|commit|rollback)\b/i,
+];
+
+function normalizeSql(sql: string): string {
+  return sql.trim().replace(/;+\s*$/g, '');
+}
+
+function isReadOnlyQuery(sql: string): boolean {
+  return /^\s*(select|with)\b/i.test(sql);
+}
+
+function validateSpatialSql(sql: string): string | null {
+  if (!sql.trim()) return 'SQL is required.';
+
+  const normalized = normalizeSql(sql);
+  if (!isReadOnlyQuery(normalized)) {
+    return 'Only read-only SELECT queries are allowed (including WITH ... SELECT).';
+  }
+
+  if (normalized.includes(';')) {
+    return 'Multiple SQL statements are not allowed.';
+  }
+
+  for (const pattern of FORBIDDEN_SQL_PATTERNS) {
+    if (pattern.test(normalized)) {
+      return 'Query includes blocked SQL keywords. Use read-only analytics SQL only.';
+    }
+  }
+
+  return null;
 }
 
 function isBasemapPreset(value: string): value is BasemapPreset {
@@ -59,7 +94,15 @@ export class ToolExecutor {
         case 'getTableSchema':
           return await this.getTableSchema(String(args.tableName ?? ''));
         case 'runH3SpatialQuery':
-          return await this.runH3SpatialQuery(String(args.sql ?? ''));
+          return await this.runH3SpatialQuery(
+            String(args.sql ?? ''),
+            typeof args.description === 'string' ? args.description : undefined,
+          );
+        case 'runSafeSpatialQuery':
+          return await this.runSafeSpatialQuery(
+            String(args.sql ?? ''),
+            typeof args.description === 'string' ? args.description : undefined,
+          );
         case 'addH3Layer':
           return this.addH3Layer(args);
         case 'flyTo':
@@ -135,15 +178,40 @@ export class ToolExecutor {
     };
   }
 
-  private async runH3SpatialQuery(sql: string): Promise<ToolExecutionResult> {
-    if (!sql || !isSelectQuery(sql)) {
+  private async runH3SpatialQuery(
+    sql: string,
+    description?: string,
+  ): Promise<ToolExecutionResult> {
+    const validationError = validateSpatialSql(sql);
+    if (validationError) {
       return {
         success: false,
-        error: 'runH3SpatialQuery only accepts SELECT queries.',
+        error: `runH3SpatialQuery rejected SQL: ${validationError}`,
       };
     }
 
-    const rows = await duckdbService.query(sql);
+    const normalizedSql = normalizeSql(sql);
+
+    let rows: Record<string, unknown>[] = [];
+    try {
+      rows = await duckdbService.query(normalizedSql, {
+        timeoutMs: DEFAULT_QUERY_TIMEOUT_MS,
+        maxRows: DEFAULT_QUERY_MAX_ROWS,
+        description,
+      });
+    } catch (error) {
+      const baseMessage = error instanceof Error ? error.message : 'Unknown query error.';
+      return {
+        success: false,
+        error: [
+          `Query failed: ${baseMessage}`,
+          `Tips: verify table/column names via listTables + getTableSchema; use DuckDB spatial/H3 functions only; keep query lightweight and read-only.`,
+        ].join(' '),
+        data: {
+          recentQueryLog: duckdbService.getRecentQueryLogs(1)[0] ?? null,
+        },
+      };
+    }
 
     const features: GeoJSONFeature[] = rows
       .map((row) => {
@@ -185,13 +253,77 @@ export class ToolExecutor {
       stats[column] = { min, max, avg };
     }
 
+    const queryLog = duckdbService.getRecentQueryLogs(1)[0] ?? null;
+    const columns = rows.length ? Object.keys(rows[0]) : [];
+    const baseMessage = `Query returned ${rows.length} rows and ${features.length} features.`;
+    const guidance =
+      rows.length > 0 && features.length === 0
+        ? ' No valid geom column was found; return geom as GeoJSON text for mapping.'
+        : '';
+
     return {
       success: true,
-      message: `Query returned ${rows.length} rows and ${features.length} features.`,
+      message: `${baseMessage}${guidance}`,
       rowCount: rows.length,
       geojson: JSON.stringify(geojson),
       stats,
+      data: {
+        columns,
+        recentQueryLog: queryLog,
+        guardrails: {
+          timeoutMs: DEFAULT_QUERY_TIMEOUT_MS,
+          maxRows: DEFAULT_QUERY_MAX_ROWS,
+        },
+      },
     };
+  }
+
+  private async runSafeSpatialQuery(
+    sql: string,
+    description?: string,
+  ): Promise<ToolExecutionResult> {
+    const validationError = validateSpatialSql(sql);
+    if (validationError) {
+      return {
+        success: false,
+        error: `runSafeSpatialQuery rejected SQL: ${validationError}`,
+      };
+    }
+
+    const normalizedSql = normalizeSql(sql);
+
+    try {
+      const rows = await duckdbService.query(normalizedSql, {
+        timeoutMs: SAFE_QUERY_TIMEOUT_MS,
+        maxRows: SAFE_QUERY_MAX_ROWS,
+        description: description || 'safe-spatial-query',
+      });
+
+      return {
+        success: true,
+        message: `Safe query returned ${rows.length} rows (max ${SAFE_QUERY_MAX_ROWS}).`,
+        rowCount: rows.length,
+        data: {
+          rows,
+          recentQueryLog: duckdbService.getRecentQueryLogs(1)[0] ?? null,
+          guardrails: {
+            timeoutMs: SAFE_QUERY_TIMEOUT_MS,
+            maxRows: SAFE_QUERY_MAX_ROWS,
+          },
+        },
+      };
+    } catch (error) {
+      return {
+        success: false,
+        error:
+          error instanceof Error
+            ? `Safe query failed: ${error.message}`
+            : 'Safe query failed with an unknown error.',
+        data: {
+          recentQueryLog: duckdbService.getRecentQueryLogs(1)[0] ?? null,
+        },
+      };
+    }
   }
 
   private addH3Layer(args: Record<string, unknown>): ToolExecutionResult {

@@ -5,6 +5,22 @@ import type { StoredGeoDataset } from '../types';
 
 type QueryRow = Record<string, unknown>;
 
+export interface QueryOptions {
+  timeoutMs?: number;
+  maxRows?: number;
+  description?: string;
+}
+
+export interface QueryExecutionLog {
+  timestamp: string;
+  sql: string;
+  description?: string;
+  durationMs: number;
+  success: boolean;
+  rowCount?: number;
+  error?: string;
+}
+
 export interface TableSummary {
   tableName: string;
   description: string;
@@ -19,6 +35,9 @@ const DEFAULT_TABLE_DESCRIPTIONS: Record<string, string> = {
   urban_energy:
     'Synthetic London building-level metrics with lat/lon, demand, solar potential, CO2 savings, and heat-pump viability.',
 };
+
+const DEFAULT_QUERY_TIMEOUT_MS = 10_000;
+const QUERY_LOG_RETENTION = 100;
 
 function isUploadedTable(tableName: string): boolean {
   return tableName.startsWith('uploaded_geo_');
@@ -71,6 +90,8 @@ export class DuckDBService {
   private initialized = false;
 
   private initializing: Promise<void> | null = null;
+
+  private queryLogs: QueryExecutionLog[] = [];
 
   async init(): Promise<void> {
     if (this.initialized) return;
@@ -128,15 +149,80 @@ export class DuckDBService {
     await conn.query(sql);
   }
 
-  async query(sql: string): Promise<QueryRow[]> {
+  private normalizeSql(sql: string): string {
+    return sql.trim().replace(/;+\s*$/g, '');
+  }
+
+  private wrapWithLimit(sql: string, maxRows?: number): string {
+    if (!maxRows || maxRows <= 0) {
+      return sql;
+    }
+    return `SELECT * FROM (${sql}) AS guarded_query LIMIT ${Math.floor(maxRows)}`;
+  }
+
+  private pushQueryLog(entry: QueryExecutionLog): void {
+    this.queryLogs.unshift(entry);
+    if (this.queryLogs.length > QUERY_LOG_RETENTION) {
+      this.queryLogs.length = QUERY_LOG_RETENTION;
+    }
+  }
+
+  getRecentQueryLogs(limit = 20): QueryExecutionLog[] {
+    return this.queryLogs.slice(0, Math.max(1, limit));
+  }
+
+  async query(sql: string, options: QueryOptions = {}): Promise<QueryRow[]> {
     const conn = await this.getConnection();
-    const result = await conn.query(sql);
-    return result.toArray().map((row) => {
-      if (typeof row.toJSON === 'function') {
-        return row.toJSON() as QueryRow;
-      }
-      return row as QueryRow;
-    });
+    const normalizedSql = this.normalizeSql(sql);
+    const boundedSql = this.wrapWithLimit(normalizedSql, options.maxRows);
+    const timeoutMs = options.timeoutMs ?? DEFAULT_QUERY_TIMEOUT_MS;
+    const startedAt = performance.now();
+
+    try {
+      const resultPromise = conn.query(boundedSql);
+      const result =
+        timeoutMs > 0
+          ? await Promise.race([
+              resultPromise,
+              new Promise<never>((_, reject) => {
+                window.setTimeout(() => {
+                  reject(new Error(`Query timed out after ${timeoutMs}ms.`));
+                }, timeoutMs);
+              }),
+            ])
+          : await resultPromise;
+
+      const rows = result.toArray().map((row) => {
+        if (typeof row.toJSON === 'function') {
+          return row.toJSON() as QueryRow;
+        }
+        return row as QueryRow;
+      });
+
+      this.pushQueryLog({
+        timestamp: new Date().toISOString(),
+        sql: boundedSql,
+        description: options.description,
+        durationMs: Math.round(performance.now() - startedAt),
+        success: true,
+        rowCount: rows.length,
+      });
+
+      return rows;
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Unknown DuckDB query error.';
+
+      this.pushQueryLog({
+        timestamp: new Date().toISOString(),
+        sql: boundedSql,
+        description: options.description,
+        durationMs: Math.round(performance.now() - startedAt),
+        success: false,
+        error: message,
+      });
+
+      throw error;
+    }
   }
 
   async listTables(): Promise<TableSummary[]> {
@@ -220,12 +306,24 @@ export class DuckDBService {
       .slice(0, 3)
       .filter((item, index) => item.score > 0 || index === 0);
 
-    return selected
-      .map(({ table, schema }) => {
+    const sections = await Promise.all(
+      selected.map(async ({ table, schema }) => {
         const columns = schema.columns.map((column) => `${column.name} (${column.type})`).join(', ');
-        return `Table: ${table.tableName}\nDescription: ${table.description}\nColumns: ${columns}`;
-      })
-      .join('\n\n');
+        const sampleRows = await this.query(
+          `SELECT * FROM ${quoteIdentifier(table.tableName)} LIMIT 2`,
+          { timeoutMs: 4_000, maxRows: 2, description: `schema-context:${table.tableName}` },
+        );
+
+        return [
+          `Table: ${table.tableName}`,
+          `Description: ${table.description}`,
+          `Columns: ${columns}`,
+          `Sample rows: ${JSON.stringify(sampleRows)}`,
+        ].join('\n');
+      }),
+    );
+
+    return sections.join('\n\n');
   }
 
   async registerPolygonDataset(dataset: StoredGeoDataset): Promise<void> {

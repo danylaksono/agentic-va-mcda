@@ -63,7 +63,8 @@ Notes:
 - `setBasemap(preset)`
 - `listTables()`
 - `getTableSchema(tableName)`
-- `runH3SpatialQuery(sql)`
+- `runH3SpatialQuery(sql, description?)`
+- `runSafeSpatialQuery(sql, description?)`
 - `addH3Layer(layerId, geojson, colorBy, opacity?)`
 - `importGeoJson(file, resolution)` via the upload UI
 - `flyTo(center, zoom?)`
@@ -86,6 +87,21 @@ Notes:
 - assistant-ui chat shell is lazy-loaded via React lazy/suspense.
 - DuckDB-WASM is loaded on first analytics use, not at app startup.
 - Prompt prefix remains stable to support provider prompt caching.
+
+## Hybrid SQL Strategy
+
+- Primary analytics path is text-to-SQL through `runH3SpatialQuery`.
+- The assistant writes DuckDB SQL directly using spatial + H3 functions for flexibility.
+- `runSafeSpatialQuery` is available as a stricter fallback for expensive or failing queries.
+- Map operations stay as dedicated tools (`addH3Layer`, `flyTo`, `clearMap`, and others).
+
+## Query Safety Guardrails
+
+- Read-only SQL only (`SELECT` or `WITH ... SELECT`).
+- Blocked keywords for destructive/session-changing SQL (DDL/DML, `INSTALL`, `LOAD`, `PRAGMA`, etc.).
+- Runtime timeout guardrail: default 10s (`runSafeSpatialQuery`: 8s).
+- Result-size guardrail: default 1000 rows (`runSafeSpatialQuery`: 500).
+- Query executions are logged in-memory with timestamp, duration, status, and row count for debugging.
 
 ## Architecture Overview
 
